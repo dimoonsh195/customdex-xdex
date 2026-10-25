@@ -2,6 +2,7 @@
 	New Dex + RemoteSpy + DevTools (Scoped)
 	Developed by Moon
 	Modded by dimoonsh
+	Fixed by AI (Raw Links & Fallbacks)
 ]]
 
 local Main, Explorer, Properties, ScriptViewer, RemoteSpy, DevTools, DefaultSettings, Notebook, Serializer, Lib
@@ -59,7 +60,7 @@ do
 		label.AutoButtonColor = false
 		
 		label.MouseButton1Click:Connect(function()
-			setclipboard(obj:GetFullName())
+			if setclipboard then setclipboard(obj:GetFullName()) end
 			local notif = Instance.new("TextLabel", label)
 			notif.Size = UDim2.new(1,0,1,0)
 			notif.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
@@ -96,6 +97,7 @@ do
 
 	function RemoteSpy.Init()
 		window = Lib.Window.new()
+		RemoteSpy.Window = window -- ФИКС: Привязываем окно
 		window:SetTitle("Remote Spy (E/F)")
 		window:Resize(450, 300)
 		window.OnActivate:Connect(function() isSpying = true end)
@@ -186,6 +188,7 @@ do
 
 	function DevTools.Init()
 		window = Lib.Window.new()
+		DevTools.Window = window -- ФИКС: Привязываем окно
 		window:SetTitle("Dev Tools")
 		window:Resize(450, 300)
 
@@ -241,6 +244,12 @@ Main = (function()
 	Main.GitRepoName = "peyton2465/Dex"
 	Main.DisplayOrders = { SideWindow = 8, Window = 10, Menu = 100000, Core = 101000 }
 
+	-- ФИКС: Функция для обработки ошибок
+	Main.Error = function(msg)
+		warn("[DEX ERROR] " .. tostring(msg))
+		error(msg, 2)
+	end
+
 	Main.GetInitDeps = function()
 		return { Main = Main, Lib = Lib, Apps = Apps, Settings = Settings, API = API, RMD = RMD, env = env, service = service, plr = plr, create = create, createSimple = createSimple }
 	end
@@ -248,14 +257,33 @@ Main = (function()
 	Main.LoadModule = function(name)
 		if Main.Elevated then
 			local control
-			if EmbeddedModules then
+			if EmbeddedModules and type(EmbeddedModules) == "table" and EmbeddedModules[name] then
 				control = EmbeddedModules[name]()
 				if gethsfuncs then control = _G.moduleData end
 				if not control then Main.Error("Missing Embedded Module: "..name) end
 			else
-				local s,moduleStr = pcall(game.HttpGet, game, "https://api.github.com/repos/"..Main.GitRepoName.."/Modules/"..name..".lua")
-				if not s then Main.Error("Failed to get external module data of "..name) end
-				control = loadstring(moduleStr)()
+				-- ФИКС: Используем прямые ссылки raw.githubusercontent.com вместо api.github.com
+				local urls = {
+					"https://raw.githubusercontent.com/"..Main.GitRepoName.."/main/Modules/"..name..".lua",
+					"https://raw.githubusercontent.com/"..Main.GitRepoName.."/master/Modules/"..name..".lua"
+				}
+				local s, moduleStr
+				for _, url in ipairs(urls) do
+					s, moduleStr = pcall(game.HttpGet, game, url)
+					if s and moduleStr and moduleStr ~= "" and not string.find(moduleStr, "404: Not Found") then
+						break
+					end
+				end
+				
+				if not s or not moduleStr or moduleStr == "" or string.find(moduleStr, "404: Not Found") then 
+					Main.Error("Failed to get external module data of "..name) 
+				end
+				
+				local func, err = loadstring(moduleStr)
+				if not func then
+					Main.Error("Failed to compile module "..name..": "..tostring(err))
+				end
+				control = func()
 			end
 			Main.AppControls[name] = control
 			control.InitDeps(Main.GetInitDeps())
@@ -295,9 +323,29 @@ Main = (function()
 			if not func then Main.MissingEnv[#Main.MissingEnv+1] = name return end
 			rawset(self,name,func)
 		end})
-		env.readfile = readfile; env.writefile = writefile; env.appendfile = appendfile; env.makefolder = makefolder; env.listfiles = listfiles; env.loadfile = loadfile; env.saveinstance = saveinstance
-		env.getupvalues = debug.getupvalues or getupvals; env.getconstants = debug.getconstants or getconsts; env.islclosure = islclosure or is_l_closure; env.checkcaller = checkcaller; env.getreg = getreg; env.getgc = getgc
-		env.setfflag = setfflag; env.decompile = decompile; env.protectgui = protect_gui or (syn and syn.protect_gui); env.gethui = gethui; env.setclipboard = setclipboard; env.getnilinstances = getnilinstances or get_nil_instances; env.getloadedmodules = getloadedmodules
+		
+		-- ФИКС: Безопасное присвоение функций с заглушками для Xboat и подобных экзекуторов
+		env.readfile = readfile or function() return "" end
+		env.writefile = writefile or function() end
+		env.appendfile = appendfile or function() end
+		env.makefolder = makefolder or function() end
+		env.listfiles = listfiles or function() return {} end
+		env.loadfile = loadfile or function() return nil end
+		env.saveinstance = saveinstance or function() end
+		env.getupvalues = debug.getupvalues or getupvals or function() return {} end
+		env.getconstants = debug.getconstants or getconsts or function() return {} end
+		env.islclosure = islclosure or is_l_closure or function() return false end
+		env.checkcaller = checkcaller or function() return false end
+		env.getreg = getreg or function() return {} end
+		env.getgc = getgc or function() return {} end
+		env.setfflag = setfflag or function() end
+		env.decompile = decompile or function() return "" end
+		env.protectgui = protect_gui or (syn and syn.protect_gui) or function() end
+		env.gethui = gethui or function() return game:GetService("CoreGui") end
+		env.setclipboard = setclipboard or function() end
+		env.getnilinstances = getnilinstances or get_nil_instances or function() return {} end
+		env.getloadedmodules = getloadedmodules or function() return {} end
+		
 		if identifyexecutor then Main.Executor = identifyexecutor() end
 		Main.GuiHolder = Main.Elevated and service.CoreGui or plr:FindFirstChildOfClass("PlayerGui")
 		setmetatable(env,nil)
@@ -545,11 +593,11 @@ Main = (function()
 			{16,"UIGridLayout",{CellSize=UDim2.new(0,66,0,74),Parent={15},SortOrder=2,}},
 			{17,"Frame",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Name="App",Parent={1},Size=UDim2.new(0,100,0,100),Visible=false,}},
 			{18,"TextButton",{AutoButtonColor=false,BackgroundColor3=Color3.new(0.2352941185236,0.2352941185236,0.2352941185236),BorderSizePixel=0,Font=3,Name="Main",Parent={17},Size=UDim2.new(1,0,0,60),Text="",TextColor3=Color3.new(0,0,0),TextSize=14,}},
-			{19,"UICorner",{CornerRadius=UDim.new(0,6),Parent={18},}}, -- Added UICorner
+			{19,"UICorner",{CornerRadius=UDim.new(0,6),Parent={18},}},
 			{20,"ImageLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,Image="rbxassetid://6579106223",ImageRectSize=Vector2.new(32,32),Name="Icon",Parent={18},Position=UDim2.new(0.5,-16,0,4),ScaleType=4,Size=UDim2.new(0,32,0,32),}},
 			{21,"TextLabel",{BackgroundColor3=Color3.new(1,1,1),BackgroundTransparency=1,BorderSizePixel=0,Font=3,Name="AppName",Parent={18},Position=UDim2.new(0,2,0,38),Size=UDim2.new(1,-4,1,-40),Text="Explorer",TextColor3=Color3.new(1,1,1),TextSize=14,TextTransparency=0.10000000149012,TextTruncate=1,TextWrapped=true,TextYAlignment=0,}},
 			{22,"Frame",{BackgroundColor3=Color3.new(0,0.66666668653488,1),BorderSizePixel=0,Name="Highlight",Parent={18},Position=UDim2.new(0,0,1,-2),Size=UDim2.new(1,0,0,2),}},
-			{23,"UICorner",{CornerRadius=UDim.new(0,6),Parent={4},}}, -- Added UICorner
+			{23,"UICorner",{CornerRadius=UDim.new(0,6),Parent={4},}},
 		})
 		Main.MainGui = gui; Main.AppsFrame = gui.OpenButton.MainFrame.AppsFrame; Main.AppsContainer = Main.AppsFrame.Container; Main.AppsContainerGrid = Main.AppsContainer.UIGridLayout; Main.AppTemplate = gui.App; Main.MainGuiOpen = false
 		local openButton = gui.OpenButton
